@@ -1,0 +1,403 @@
+---
+title: "PHP2530_Final_Paper_JL"
+author: "Jialin Liu"
+date: "2024-05-14"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(rstan)
+library(gridExtra)
+library(ggplot2)
+library(tidyverse)
+library(data.table)
+library(parallel)
+library(dplyr)
+library(ggpubr)
+
+rstan_options (auto_write = TRUE)
+options (mc.cores = parallel::detectCores ())
+```
+
+## 
+
+```{r}
+#### function set up stochastic model
+run_model_SEIR = function(
+    # number of total timesteps
+  time_steps = 60,
+  
+  # population size
+  pop.size = 10000,
+  
+  # number of initial infections
+  seeds = 50,
+  recovered = 0,
+  
+  # probability of transmission given contact
+  trans_prob = 0.32,
+  
+  # average days of infectiousness
+  inf_days = 5,
+  delta = 3,
+  
+  # date to change trans_prob
+  T0 = 60,
+  
+  # amount to change trans_prob
+  trans_prob2 = .32){
+  
+  beta = trans_prob  
+  # * for now, we'll just fix these
+  # * though for more complex models, you'd allow both
+  # * to vary around an average
+  
+  # track states
+  S = rep(0, time_steps)
+  I = rep(0, time_steps)
+  E = rep(0, time_steps)
+  R = rep(0, time_steps)
+  Rt = rep(0, time_steps)
+  inc = rep(0, time_steps)
+  C = rep(0, time_steps)
+  mean = rep(0, time_steps)
+  
+  # initial conditions
+  S[1] = pop.size - seeds - recovered
+  E[1] = seeds
+  I[1] = seeds
+  R[1] = recovered
+  
+  for(i in 2:time_steps){
+    
+    # change beta at the change time point
+    if(i == T0 + 1) beta = trans_prob2
+    
+    # set up random draw
+    mean[i] = beta*I[i-1]*S[i-1]/pop.size
+    trans_t = rpois(1, lambda = mean[i])
+    
+    # susceptible
+    S[i] = S[i-1] - trans_t
+    # infectious
+    E[i] =  (1-1/delta)*E[i-1] + trans_t
+    I[i] = (1-1/inf_days)*I[i-1] + 1/delta*E[i-1]
+    inc[i] = trans_t
+    C[i] = C[i-1] + trans_t
+    
+    # recovered
+    R[i] = R[i-1] + 1/inf_days*I[i-1]
+    Rt[i] = inc[i]/I[i-1]*inf_days
+    
+  }
+  
+  d = data.table(S, E, I, inc, C, R, mean, Rt, frac = S/pop.size) %>%
+    mutate(t = row_number())
+  
+  return(d)
+}
+```
+
+
+```{r}
+# time series of cases
+cases_1 <- L_Sim_2_inc$inc.2  # Number of students in bed
+cases_2 <- L_Sim_2_inc$inc.5
+cases_3 <- L_Sim_2_inc$inc.13
+cases_4 <- L_Sim_2_inc$inc.35
+cases_5 <- L_Sim_2_inc$inc.48
+
+# total count
+N <- 1000000;
+
+# times
+n_days <- length(cases_1)
+t <- seq(0, n_days, by = 1)
+t0 = 0 
+t <- t[-1]
+
+#initial conditions
+i0 <- 5
+s0 <- N - i0
+e0 <- 0
+r0 <- 0
+y0 = c(S = s0, E = e0, I = i0, R = r0)
+
+# data for Stan
+data_seir <- list(n_days = n_days, y0 = y0, t0 = t0, ts = t, N = N, cases = cases)
+
+# number of MCMC steps
+niter <- 2000
+burin <- 1000
+
+model <- stan_model("Final_Paper_Mod.stan")
+
+
+fit_seir_negbin <- sampling(model,
+                data = data_seir,
+                chains = 2, 
+                seed = 1314,
+                iter = niter,
+                warmup = burin)
+
+pars=c('beta', 'sigma', 'gamma', "R0")
+print(fit_seir_negbin, pars = pars)
+
+run_stan_model_500 <- function(cases_sim_500) {
+  data_seir <- list(n_days = n_days, y0 = y0, t0 = t0, ts = t, N = N, cases = cases_sim_500)
+  fit <- sampling(model,
+                  data = data_seir,
+                  chains = 2, 
+                  seed = 1314,
+                  iter = niter,
+                  warmup = burin)
+  return(fit)
+}
+
+# Detect the number of available cores
+num_cores <- detectCores() - 1  # Use one less than the total number of cores
+
+# Run the models in parallel
+simulated_cases <- list_of_500_simulated_cases
+
+
+simulated_cases_list_2 <- as.list(as.data.frame(L_Sim_2_inc[, 3:13]))
+
+
+fits <- mclapply(simulated_cases_list_2, run_stan_model_500, mc.cores = num_cores)
+fits$inc.5
+
+fit_seir_negbin_1 <- sampling(model,
+                data = list(n_days = n_days, y0 = y0, t0 = t0, ts = t, N = N, cases = cases_1),
+                chains = 2, 
+                seed = 1314,
+                iter = niter,
+                warmup = burin)
+
+fit_seir_negbin_2 <- sampling(model,
+                data = list(n_days = n_days, y0 = y0, t0 = t0, ts = t, N = N, cases = cases_2),
+                chains = 2, 
+                seed = 1314,
+                iter = niter,
+                warmup = burin)
+
+fit_seir_negbin_3 <- sampling(model,
+                data = list(n_days = n_days, y0 = y0, t0 = t0, ts = t, N = N, cases = cases_3),
+                chains = 2, 
+                seed = 1314,
+                iter = niter,
+                warmup = burin)
+
+fit_seir_negbin_4 <- sampling(model,
+                data = list(n_days = n_days, y0 = y0, t0 = t0, ts = t, N = N, cases = cases_4),
+                chains = 2, 
+                seed = 1314,
+                iter = niter,
+                warmup = burin)
+
+fit_seir_negbin_5 <- sampling(model,
+                data = list(n_days = n_days, y0 = y0, t0 = t0, ts = t, N = N, cases = cases_5),
+                chains = 2, 
+                seed = 1314,
+                iter = niter,
+                warmup = burin)
+
+print(fit_seir_negbin_1, pars = pars)
+
+print(fit_seir_negbin_2, pars = pars)
+
+print(fit_seir_negbin_3, pars = pars)
+
+print(fit_seir_negbin_4, pars = pars)
+
+print(fit_seir_negbin_5, pars = pars)
+```
+
+
+```{r}
+# rowmean
+cases_mean_R02 <- round(rowMeans(L_Sim_2_inc),0)
+fit_seir_negbin_rowmean2 <- sampling(model,
+                data = list(n_days = n_days, y0 = y0, t0 = t0, ts = t, N = N, cases = cases_mean_R02),
+                chains = 2, 
+                seed = 1314,
+                iter = niter,
+                warmup = burin)
+print(fit_seir_negbin_rowmean2, pars = pars)
+```
+
+
+```{r}
+pars_dens_r02 <- stan_dens(fit_seir_negbin_1, pars = c('sigma', 'R0'), separate_chains = TRUE)+ggtitle("Marginal Posterior Densities when R0 of 2")
+ggsave(filename = "pars_dens_r02.png", plot = pars_dens_r02, device = "png", path = "/Users/jialinliu/Desktop/PHP2530_R_codes", dpi = 500, height = 10, width = 15, units = "in", bg = "white")
+```
+
+```{r}
+fit_r01.5 <- sampling(model,
+                data = list(n_days = n_days, y0 = y0, t0 = t0, ts = t, N = N, cases = L_Sim_1.5_inc$inc.3),
+                chains = 2, 
+                seed = 1314,
+                iter = niter,
+                warmup = burin)
+
+print(fit_r01.5, pars = c('sigma', 'R0'))
+pars_dens_r01.5 <- stan_dens(fit_r01.5, pars = c('sigma', 'R0'), separate_chains = TRUE, color = "black")+ggtitle("Marginal Posterior Densities when R0 of 1.5")
+
+
+fit_r02.5 <- sampling(model,
+                data = list(n_days = n_days, y0 = y0, t0 = t0, ts = t, N = N, cases = L_Sim_2.5_inc$inc.3),
+                chains = 2, 
+                seed = 1314,
+                iter = 5000,
+                warmup = burin)
+print(fit_r02.5, pars = c('sigma', 'R0'))
+pars_dens_r02.5 <- stan_dens(fit_r02.5, pars = c('sigma', 'R0'), separate_chains = TRUE, color = "black")+ggtitle("Posterior Distributions under R0 of 2.5")
+
+fit_r03 <- sampling(model,
+                data = list(n_days = n_days, y0 = y0, t0 = t0, ts = t, N = N, cases = L_Sim_3_inc$inc.10),
+                chains = 2, 
+                seed = 13,
+                iter = 5000,
+                warmup = burin)
+print(fit_r03, pars = c('sigma', 'R0'))
+
+pars_dens_r03 <- stan_dens(fit_r03, pars = c('sigma', 'R0'), separate_chains = TRUE, color = "black")+ggtitle("Posterior Distributions under R0 of 3")
+
+ggarrange(pars_dens_r01.5, pars_dens_r02, ncol = 1, nrow = 2)
+```
+
+
+```{r}
+smr_pred <- cbind(as.data.frame(summary(
+  fit_seir_negbin, pars = "pred_cases", probs = c(0.05, 0.5, 0.95))$summary), t, cases)
+colnames(smr_pred) <- make.names(colnames(smr_pred)) # to remove % in the col names
+
+inc_pred_obs <- ggplot(smr_pred, mapping = aes(x = t)) +
+  geom_ribbon(aes(ymin = X5., ymax = X95.), fill = "pink", alpha = 0.35) +
+  geom_line(mapping = aes(x = t, y = X50.), color = "red") + 
+  geom_point(mapping = aes(y = cases)) +
+  theme_bw()+
+  labs(x = "Day", y = "Number of Incident Cases")
+
+ggsave(filename = "Inc_pred_obs.png", plot = inc_pred_obs, device = "png", path = "/Users/jialinliu/Desktop/PHP2530_R_codes", dpi = 500, height = 10, width = 15, units = "in", bg = "white")
+
+```
+
+```{r}
+smr_pred_r02 <- cbind(as.data.frame(summary(
+  fit_seir_negbin_1, pars = "pred_cases", probs = c(0.05, 0.5, 0.95))$summary), t, cases)
+colnames(smr_pred_r02) <- make.names(colnames(smr_pred_r02)) # to remove % in the col names
+
+inc_pred_obs_ro2 <- ggplot(smr_pred_r02, mapping = aes(x = t)) +
+  geom_ribbon(aes(ymin = X5., ymax = X95.), fill = "pink", alpha = 0.35) +
+  geom_line(mapping = aes(x = t, y = X50.), color = "red") + 
+  geom_point(mapping = aes(y = cases_1)) +
+  theme_classic()+
+  labs(x = "Day", y = "Number of Incident Cases")+
+  ggtitle("Predicted Incidence under R0 of 2")
+inc_pred_obs_ro2
+
+smr_pred_r01.5 <- cbind(as.data.frame(summary(
+  fit_r01.5, pars = "pred_cases", probs = c(0.05, 0.5, 0.95))$summary), t, L_Sim_1.5_inc$inc.3)
+colnames(smr_pred_r01.5) <- make.names(colnames(smr_pred_r01.5)) # to remove % in the col names
+
+inc_pred_obs_ro1.5 <- ggplot(smr_pred_r01.5, mapping = aes(x = t)) +
+  geom_ribbon(aes(ymin = X5., ymax = X95.), fill = "pink", alpha = 0.35) +
+  geom_line(mapping = aes(x = t, y = X50.), color = "red") + 
+  geom_point(mapping = aes(y = L_Sim_1.5_inc$inc.3)) +
+  theme_classic()+
+  labs(x = "Day", y = "Number of Incident Cases")+
+  ggtitle("Predicted Incidence under R0 of 1.5")
+inc_pred_obs_ro1.5
+
+smr_pred_r02.5 <- cbind(as.data.frame(summary(
+  fit_r02.5, pars = "pred_cases", probs = c(0.05, 0.5, 0.95))$summary), t, L_Sim_2.5_inc$inc.3)
+colnames(smr_pred_r02.5) <- make.names(colnames(smr_pred_r02.5)) # to remove % in the col names
+
+inc_pred_obs_ro2.5 <- ggplot(smr_pred_r02.5, mapping = aes(x = t)) +
+  geom_ribbon(aes(ymin = X5., ymax = X95.), fill = "pink", alpha = 0.35) +
+  geom_line(mapping = aes(x = t, y = X50.), color = "red") + 
+  geom_point(mapping = aes(y = L_Sim_2.5_inc$inc.3)) +
+  theme_classic()+
+  labs(x = "Day", y = "Number of Incident Cases")+
+  ggtitle("Predicted Incidence under R0 of 2.5")
+inc_pred_obs_ro2.5
+
+smr_pred_r03 <- cbind(as.data.frame(summary(
+  fit_r03, pars = "pred_cases", probs = c(0.05, 0.5, 0.95))$summary), t, L_Sim_3_inc$inc.10)
+colnames(smr_pred_r03) <- make.names(colnames(smr_pred_r03)) # to remove % in the col names
+
+inc_pred_obs_ro3 <- ggplot(smr_pred_r03, mapping = aes(x = t)) +
+  geom_ribbon(aes(ymin = X5., ymax = X95.), fill = "pink", alpha = 0.35) +
+  geom_line(mapping = aes(x = t, y = X50.), color = "red") + 
+  geom_point(mapping = aes(y = L_Sim_3_inc$inc.10)) +
+  theme_classic()+
+  labs(x = "Day", y = "Number of Incident Cases")+
+  ggtitle("Predicted Incidence under R0 of 3")
+inc_pred_obs_ro3
+```
+
+```{r}
+inc_pred_comb <- ggarrange(inc_pred_obs_ro1.5, inc_pred_obs_ro2, inc_pred_obs_ro2.5, inc_pred_obs_ro3, ncol = 2, nrow = 2)
+ggsave(filename = "inc_pred_combs.png", plot = inc_pred_comb, device = "png", path = "/Users/jialinliu/Desktop/PHP2530_R_codes", dpi = 500, height = 10, width = 15, units = "in", bg = "white")
+```
+
+
+```{r}
+params <- lapply(t, function(i){sprintf("y[%s,3]", i)}) #number of infected for each day
+smr_y_r02 <- as.data.frame(summary(fit_seir_negbin_1, 
+                               pars = params, probs = c(0.05, 0.5, 0.95))$summary)
+colnames(smr_y_r02) <- make.names(colnames(smr_y_r02)) # to remove % in the col names
+
+infect_pred_obs_r02 <- ggplot(smr_y_r02, mapping = aes(x = t)) +
+  geom_ribbon(aes(ymin = X5., ymax = X95.), fill = "green", alpha = 0.35) +
+  geom_line(mapping = aes(x = t, y = X50.), color = "red") + 
+  geom_point(mapping = aes(y = L_Sim_2$inc2)) +
+  theme_classic()+
+  labs(x = "Day", y = "Number of Infections")+
+  ggtitle("Predicted Infections Under R0 of 2")
+
+smr_y_r01.5 <- as.data.frame(summary(fit_r01.5, 
+                               pars = params, probs = c(0.05, 0.5, 0.95))$summary)
+colnames(smr_y_r01.5) <- make.names(colnames(smr_y_r01.5)) # to remove % in the col names
+
+infect_pred_obs_r01.5 <- ggplot(smr_y_r01.5, mapping = aes(x = t)) +
+  geom_ribbon(aes(ymin = X5., ymax = X95.), fill = "green", alpha = 0.35) +
+  geom_line(mapping = aes(x = t, y = X50.), color = "red") + 
+  geom_point(mapping = aes(y = L_Sim_1.5$inc2)) +
+  theme_classic()+
+  labs(x = "Day", y = "Number of Infections")+
+  ggtitle("Predicted Infections Under R0 of 1.5")
+
+
+smr_y_r02.5 <- as.data.frame(summary(fit_r02.5, 
+                               pars = params, probs = c(0.05, 0.5, 0.95))$summary)
+colnames(smr_y_r02.5) <- make.names(colnames(smr_y_r02.5)) # to remove % in the col names
+
+infect_pred_obs_r02.5 <- ggplot(smr_y_r02.5, mapping = aes(x = t)) +
+  geom_ribbon(aes(ymin = X5., ymax = X95.), fill = "green", alpha = 0.35) +
+  geom_line(mapping = aes(x = t, y = X50.), color = "red") + 
+  geom_point(mapping = aes(y = L_Sim_2.5$inc)) +
+  theme_classic()+
+  labs(x = "Day", y = "Number of Infections")+
+  ggtitle("Predicted Infections Under R0 of 2.5")
+
+smr_y_r03 <- as.data.frame(summary(fit_r03, 
+                               pars = params, probs = c(0.05, 0.5, 0.95))$summary)
+colnames(smr_y_r03) <- make.names(colnames(smr_y_r03)) # to remove % in the col names
+
+infect_pred_obs_r03 <- ggplot(smr_y_r03, mapping = aes(x = t)) +
+  geom_ribbon(aes(ymin = X5., ymax = X95.), fill = "green", alpha = 0.35) +
+  geom_line(mapping = aes(x = t, y = X50.), color = "red") + 
+  geom_point(mapping = aes(y = L_Sim_3$inc)) +
+  theme_classic()+
+  labs(x = "Day", y = "Number of Infections")+
+  ggtitle("Predicted Infections Under R0 of 3")
+
+
+infect_pred_comb <- ggarrange(infect_pred_obs_r01.5, infect_pred_obs_r02, infect_pred_obs_r02.5, infect_pred_obs_r03, ncol = 2, nrow = 2)
+ggsave(filename = "infect_pred_comb.png", plot = infect_pred_comb, device = "png", path = "/Users/jialinliu/Desktop/PHP2530_R_codes", dpi = 500, height = 10, width = 15, units = "in", bg = "white")
+```
+
